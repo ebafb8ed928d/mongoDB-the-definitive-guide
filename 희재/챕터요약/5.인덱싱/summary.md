@@ -459,3 +459,302 @@ db.blog.createIndex({ "comments.date": 1 })
 
 #### 5.1.7 인덱스 카디널리티 
 카디널리티(cardinality) 는 컬렉션의 한 필드에 대해 고윳값(distinct value)이 얼마나 많은지 나타낸다. 일반적으로 필드의 카디널리티가 높을수록 인덱싱이 더욱 도움이 된다. 
+
+
+### 5.2 explain 출력 
+쿼리 실행 계획을 확인하려면 `explain()` 메서드를 사용한다. `explain()` 메서드는 쿼리를 실행하지 않고, 쿼리 실행 계획을 출력한다. 특수한 유형의 인덱스는 약간 다른 쿼리 플랜을 만들 수도 있지만 대부분의 필드는 유사하다. 또한 샤딩은 쿼리를 여러 서버에서 수행하므로 explain 들의 집합체를 반환한다.
+
+쿼리가 `COLLSCAN` 을 사용하면 인덱스를 사용하지 않음을 알 수 있다.
+다음의 쿼리를 살펴보자 
+
+```javascript
+db.users
+    .find({
+        age: 42
+    })
+    .explain('executionStats')
+```
+
+```javascript
+{
+  "queryPlanner": {
+    "plannerVersion": 1,
+    "namespace": "test.users",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "age": {
+        "$eq": 42
+      }
+    },
+    "winningPlan": {
+      "stage": "FETCH",
+      "inputStage": {
+        "stage": "IXSCAN",
+        "keyPattern": {
+          "age": 1,
+          "username": 1
+        },
+        "indexName": "age_1_username_1",
+        "isMultiKey": false,
+      }
+    },
+    ...
+  }
+}
+```
+
+* `isMultiKey: false` 
+  * 다중키 인덱스 사용 여부 (5.1.6 "객체 및 배열 인덱싱" 참조)
+* `nReturned: 8449`
+  * 쿼리에 의해 반환된 도큐먼트 개수
+* `totalDocsExamined: 8449`
+  * 몽고DB가 디스크 내 실제 도큐먼트를 가리키는 인덱스 포인터(index pointer) 를 따라간 횟수. 쿼리가 인덱스의 일부가 아닌 검색 조건을 포함하거나, 인덱스에 포함되지 않은 필드를 반환하도록 요청한다면 몽고DB는 각 인덱스 항목이 가리키는 도큐먼트를 살펴봐야 한다. 
+* `totalKeyExamine: 8449`
+  * 인덱스가 사용됐다면 살펴본 인덱스 항목 개수, 테이블 스캔을 했다면 조사한 도큐먼트 개수
+* `stage: IXSCAN`
+  * 몽고DB가 인덱스를 사용해 쿼리할 수 있었는지 여부. `COLSCAN` 은 인덱스로 쿼리할 수 없어 컬렉션 스캔을 수행했음을 뜻한다. 
+* `needYields: 0`
+  * 쓰기 요청을 처리하도록 쿼리가 양보(yield, 일시 중지)한 횟수. 대기중인 쓰기가 있다면 쿼리는 일시적으로 lock 을 해제하고 쓰기가 처리되게 한다. 하지만 이 시스템에서는 대기중인 쓰기가 없었으므로 쿼리는 한 번도 양보하지 않았다. 
+* `executionTimeMillis: 15`
+  * 데이터베이스가 쿼리하는 데 걸린 시간. 밀리초 단위이며 낮을수록 좋다.
+  * `indexBounds: {...}`
+    * 인덱스가 어떻게 사용됐는지 설명하며 탐색한 인덱스의 범위를 제공한다. 쿼리에서 첫 번째 절은 완전 일치이므로 인덱스는 단지 그 값, 즉 42만 찾으면 됐다. 두 번째 인덱스 키는 자유변수(free variable)다. 쿼리가 키에 어떤 제약 사항도 명시하지 않았기 때문이다. 따라서 데이터베이스는 `age: 42` 내에서 사용자명이 음의 무한대(`$minElement: 1`) 와 양의 무한대 (`$maxElement: 1) 사이에 있는 값을 찾았다.
+    * 다음의 인덱스가 설정되어 있는 상황을 가정하자 
+      ```json
+      {
+        "username": 1
+      }
+      ```
+      ```json
+      {
+        "age": 1,
+        "username": 1
+      }
+      ```
+      ```javascript
+      db.users
+        .find({
+          age: {
+              $gt: 10,
+          },
+          username: "user2134"  
+        })
+        .explain()
+      ```
+      ```
+      {
+        ...,
+        "winningPlan": {
+          ...,
+          "inputStage": {
+            "stage": "IXSCAN",
+            "indexName": "username_1"
+          } 
+        },
+      } 
+      ```
+      위의 쿼리에서는 `{username: 1}` 인덱스를 사용한다. 완전일치 인덱스를 사용하는 것이 범위 인덱스를 사용하는 것보다 효율적이기 때문이다. 
+      ```javascript
+        db.users
+          .find({
+              age: 14,
+              username: /.*/
+            })
+          .explain()
+      ```
+      위의 쿼리에서는 `{age: 1, username: 1}` 의 인덱스를 사용한다. 완전일치 인덱스 사용 후, 범위 인덱스를 사용하면, 쿼리를 최적화할 수 있기 때문이다. 
+    * 쿼리에 사용하려 했던 인덱스와 다른 인덱스를 몽고DB가 사용한다면 hint 를 사용해 특정 인덱스를 사용하도록 강제할 수 있다.
+    ```javascript
+    db.users
+      .find({
+          age: 14,
+          username: /.*/
+      })
+      .hint({
+          username: 1,
+          age: 1,
+      })
+    ```
+
+  
+### 5.3 인덱스를 생성하지 않는 경우 
+인덱스는 데이터의 일부를 조회할 때 가장 효율적이며, 어떤 쿼리는 인덱스가 없는 게 더 빠르다. 인덱스는 컬렉션에서 가져와야 하는 부분이 많을수록 비효율적인데, 인덱스를 하나 사용하려면 두 번의 조회를 해야 하기 때문이다.
+아쉽게도 인덱스가 도움이 될지 혹은 방해가 될지 알 수 있는 공식은 없다. 실제 데이터 크기, 인덱스 크기, 도큐먼트 크기, 결과 셋의 평균 크기 등에 따라 다르기 때문이다. 대체로 쿼리가 컬렉션의 30% 이상을 반환하는 경우 인덱스는 종종 쿼리 속도를 높인다.
+
+| 인덱스가 적합한 경우 | 컬렉션 스캔이 적합한 경우 |
+|-------------|---------------|
+| 큰 컬렉션       | 작은 컬렉션        | 
+| 큰 도큐먼트      | 작은 도큐먼트       | 
+| 선택적 쿼리      | 비선택적 쿼리       | 
+
+
+다음의 쿼리를 살펴보자 
+```javascript
+db.entries.find({
+  created_at: {
+      $lt: hourAgo
+  }
+})
+```
+
+대부분의 어플리케이션에서 이는 잘못된 쿼리다. 하지만 통계 시스템에 데이터를 내보낼 때나 일괄 작업을 할 때처럼, 데이터의 대부분 혹은 전부가 필요할 때가 있다.
+
+### 5.4 인덱스 종류 
+#### 5.4.1 고유 인덱스 
+고유 인덱스는 각 값이 인덱스에 최대 한 번 나타나도록 보장한다. 
+```javascript
+
+db.users.createIndex({
+  username: 1
+}, {
+  unique: true,
+  // username 필드가 존재하는 도큐먼트에 대해서만 인덱스를 적용한다
+  partialFilterExpression: {
+      username: {
+          $exists: true
+      }
+  }
+})
+```
+
+> 도큐먼트에 키가 존재하지 않으면 인덱스는 그 도큐먼트에 대한 값을 null 로 저장한다. 따라서 고유 인덱스를 생성한 후, 인덱싱된 필드가 없는 도큐먼트를 2개 이상 삽입하려고 시도하면, 이미 null 값을 갖는 도큐먼트가 존재하기 때문에 실패한다.
+
+
+##### 복합 고유 인덱스 
+복합 고유 인덱스(compound unique index) 를 만들 수도 있다. 이 때 개별 키는 같은 값을 가질 수 있지만 인덱스 항목의 모든 키에 걸친 조합은 인덱스에서 최대 한 번만 나타난다. 
+
+
+#### 5.4.2 부분 인덱스 
+고유 인덱스는 null을 값으로 취급하므로, 키가 없는 도큐먼트가 여러 개인 고유 인덱스를 만들 수 없다. 하지만 오직 키가 존재할 때만 고유 인덱스가 적용되도록 할 때가 많다. 고유한 필드가 아예 존재하지 않으면 `unique` 와 `partial` 을 결합할 수 있다. 부분 인덱스를 만들려면 `partialFilterExpression` 옵션을 포함시킨다. 
+
+```javascript
+db.users.ensureIndex({
+  email: 1
+}, {
+  unique: true,
+  partialFilterExpression: {
+    email: {
+        $exists: true
+    }
+  }
+})
+```
+
+쿼리는 부분 인덱스 사용 여부에 따라 다른 결과를 반환할 수 있다는 점을 기억하자. 다음과 같은 상황을 살펴보자 
+```javascript
+db.foo.find()
+```
+
+```
+{
+  "_id": 0
+}
+{
+  "_id": 1,
+  "x": 1
+}
+{
+  "_id": 2,
+  "x": 2
+}
+{
+  "_id": 3,
+  "x": 3
+}
+```
+```javascript
+db.foo.find({
+  x: {
+      $ne: 2
+  }
+})
+```
+```
+{
+  "_id": 0
+}
+{
+  "_id": 1,
+  "x": 1
+}
+{
+  "_id": 3,
+  "x": 3
+}
+```
+
+이제 다음과 같은 인덱스를 추가해 보자 
+```javascript
+db.foo.createIndex({
+  x: 1,
+  partialFilterExpression: {
+      x: {
+          $exists: true
+      }
+  }
+})
+
+db.foo.find()
+```
+
+```
+{
+  "_id": 1,
+  "x": 1
+}
+{
+  "_id": 3,
+  "x": 3
+}
+```
+필드가 없는 도큐먼트가 필요할 때는 hint 를 사용함으로써 테이블 스캔을 하도록 강제할 수 있다.
+
+### 5.5 인덱스 관리
+데이터베이스의 인덱스 정보는 모두 `system.indexes` 컬렉션에 저장된다. 이는 예약된 컬렉션이므로 안에 있는 도큐먼트를 수정, 제거할 수 없으며, `createIndex`, `createIndexes`, `dropIndexes` 와 같은 데이터베이스 명령으로만 조작할 수 있다. 인덱스 목록을 확인하기 위해서는 `db.컬렉션명.getIndexes()` 를 실행한다.
+
+```javascript
+db.students.getIndexes()
+```
+
+```json
+[
+  {
+    "v": 2,
+    "key": {
+      "_id": 1
+    },
+    "name": "_id_",
+    "ns": "school.students",
+  },
+  {
+    "v": 2,
+    "key": {
+      "class_id": 1
+    },
+    "name": "class_id_1",
+    "ns": "school.students",
+  }
+
+]
+```
+
+중요한 필드는 `key` 와 `name` 이다. 키는 힌트에 사용하거나, 인덱스에 명시돼야 하는 위치에 사용할 수 있다. 인덱스는 필드 순서에 상관있다. `{ class_id: 1, student_id: 1 }` 과 `{ student_id: 1, class_id: 1 }` 은 서로 다른 인덱스다.
+
+
+### 5.5.1 인덱스 식별 
+컬렉션 내 각 인덱스는 고유하게 식별하는 이름이 있다. 인덱스명은 서버에서 인덱스를 삭제하거나 조작하는 데 사용된다. 인덱스명은 기본적으로 `키명1_방향1_키명2_방향2...키명N_방향N` 이다. 따라서 인덱스 키가 두 개 이상이면 인덱스 명이 길어질 수 있으므로 createIndex 의 옵션으로 원하는 이름을 지정할 수 있다.
+
+```javascript
+db.soup.createIndex({
+  a: 1,
+}, {
+    name: "alphabet"
+})
+```
+
+### 5.5.2 인덱스 변경 
+인덱스는 다음과 같이 제거하자
+
+```javascript
+db.people.dropIndex("x_1_y_1")
+```
