@@ -228,3 +228,38 @@ db.companies.aggregate([
   },
 ]);
 ```
+
+### 7.5 $unwind
+
+$unwind 문을 사용하면, 집계 파이프라인의 선출 단계 전에 전개 단계를 포함하고, $unwind 문에 속한 배열을 펼친다. 갱신된 집계 쿼리는 다음과 같다.
+
+```javascript
+db.companies.aggregate([
+  {
+    $match: {
+      "funding_rounds.investments.financial_org.permalink": "greylock",
+    },
+  },
+  { $unwind: "$funding_rounds" },
+  {
+    $project: {
+      _id: 0,
+      name: 1,
+      amount: "$funding_rounds.raised_amount",
+      year: "$funding_rounds.funded_year",
+    },
+  },
+]);
+```
+> 주의할만한 점 : `$unwind` 명령어 앞에는 각 컬럼명 앞에 `"$"` 를 붙여야 제대로 동작한다
+
+위의 쿼리를 실행하면 funding_rounds 배열이 펼쳐지고, 각 배열 요소는 독립된 도큐먼트로 반환된다. `funding_rounds` 필드를 제외한 모든 필드는 키와 값이 동일하다. 
+
+```json
+{ "name": "Digg", "amount": 8500000, "year": 2006 },
+{ "name": "Digg", "amount": 2800000, "year": 2005 },
+{ "name": "Digg", "amount": 2870000, "year": 2008 },
+{ "name": "Digg", "amount": 5000000, "year": 2011 },
+{ "name": "Facebook", "amount": 50000, "year": 2004 },
+{ "name": "Facebook", "amount": 2750000, "year": 2006 },
+```
