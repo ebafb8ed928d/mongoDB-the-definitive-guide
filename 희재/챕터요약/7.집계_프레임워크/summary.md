@@ -263,3 +263,9 @@ db.companies.aggregate([
 { "name": "Facebook", "amount": 50000, "year": 2004 },
 { "name": "Facebook", "amount": 2750000, "year": 2006 },
 ```
+
+### 7.7 누산기 
+* 모든 값 합산(`$sum`)
+* 평균 합산(`$avg`)
+* 첫 번째 값(`$first`)
+* 마지막 값(`$last`)
